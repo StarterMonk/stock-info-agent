@@ -1,0 +1,6 @@
+# 密钥与本地环境
+.env
+*.db
+__pycache__/
+.DS_Store
+.venv/

@@ -1,0 +1,43 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: #f5f6f8; color: #1f2329; }
+.layout { display: flex; height: 100vh; }
+
+.sidebar { width: 240px; background: #1f2329; color: #e8eaed;
+  display: flex; flex-direction: column; padding: 12px; }
+.sidebar #newBtn { background: #3370ff; color: #fff; border: none;
+  padding: 10px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+.sidebar #newBtn:hover { background: #245bdb; }
+#sessionList { list-style: none; margin-top: 12px; overflow-y: auto; flex: 1; }
+#sessionList li { padding: 10px; border-radius: 6px; cursor: pointer;
+  display: flex; justify-content: space-between; align-items: center; font-size: 14px; }
+#sessionList li:hover { background: #2b3038; }
+#sessionList li .del { color: #ff7875; font-size: 12px; }
+#sessionList li .del:hover { color: #ff4d4f; }
+
+.chat { flex: 1; display: flex; flex-direction: column; }
+.chat header { padding: 14px 20px; background: #fff; border-bottom: 1px solid #e5e6eb;
+  font-weight: 600; font-size: 16px; display: flex; justify-content: space-between; align-items: center; }
+.chat header .actions button { background: #f2f3f5; color: #1f2329; border: 1px solid #d0d3d9;
+  padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; margin-left: 8px; }
+.chat header .actions button:hover { background: #e5e6eb; }
+#messages { flex: 1; overflow-y: auto; padding: 20px; }
+.msg { max-width: 78%; padding: 10px 14px; border-radius: 10px;
+  margin-bottom: 12px; line-height: 1.6; font-size: 14px; white-space: normal; }
+.msg.user { background: #3370ff; color: #fff; margin-left: auto; }
+.msg.assistant { background: #fff; border: 1px solid #e5e6eb; }
+#chart { padding: 0 20px 12px; }
+
+#form { display: flex; padding: 14px 20px; background: #fff;
+  border-top: 1px solid #e5e6eb; gap: 10px; }
+#form input { flex: 1; padding: 10px 14px; border: 1px solid #d0d3d9;
+  border-radius: 8px; font-size: 14px; outline: none; }
+#form input:focus { border-color: #3370ff; }
+#form button { background: #3370ff; color: #fff; border: none; padding: 0 22px;
+  border-radius: 8px; cursor: pointer; font-size: 14px; }
+#form button:hover { background: #245bdb; }
+
+@media (max-width: 640px) {
+  .sidebar { width: 140px; }
+  .msg { max-width: 92%; }
+}
