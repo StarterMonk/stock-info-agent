@@ -4,7 +4,6 @@
 
 > 先说在前面：这是我一边学 AI Agent、一边炒股时顺手做的小练习，纯属练手踩坑用。代码和思路都不算成熟，里面大概率有不少粗糙、甚至不对的地方。如果您刚好逛到这儿，欢迎随时拍砖、提建议，先谢过啦 🙏
 
-
 ---
 
 ## 目录结构
@@ -17,10 +16,10 @@
 ├── 2026-07-12-v2/            # + SSE 流式 + 会话导出 + 网站兜底
 ├── 2026-07-12-v3/            # + LLM(Gemini/Gemma) 意图解析 + 盘中查询 + 安全加固
 ├── 2026-07-12-v4/            # + 多轮记忆 + 工具调用(Tool Calling) 全维度
-└── 2026-07-12-v5/            # (规划) LangGraph 编排的 Agent 架构
+└── 2026-07-12-v5/            # + LangGraph 编排的 Agent（StateGraph + ToolNode + MemorySaver）
 ```
 
-> 项目以**渐进式版本迭代**方式演进：v1 → v4 已落地验证，v5（LangGraph 架构）规划中。每个版本独立成文件夹，方便我自己回头对比、回滚，也方便你挑感兴趣的版本看。
+> 项目以**渐进式版本迭代**方式演进：v1 → v5 均已落地验证。每个版本独立成文件夹，方便我自己回头对比、回滚，也方便你挑感兴趣的版本看。
 
 ---
 
@@ -33,7 +32,7 @@
 | 数据       | AKShare（新浪/巨潮/同花顺/东财等多源）                                |
 | 存储       | SQLite（会话、消息、长期记忆）                                        |
 | 前端       | 原生 JS + ECharts 5（K 线图），SSE 流式渲染                           |
-| Agent 编排 | v4 手写 ReAct 闭环；v5 计划用 LangGraph                               |
+| Agent 编排 | v4 手写 ReAct 闭环；v5 用 LangGraph StateGraph 编排                  |
 
 ---
 
@@ -72,6 +71,7 @@
 
 - **目标**：让 Agent 自己决定该调哪些工具，并且能记住之前聊过啥。
 - **架构**：
+
   ```
   用户消息
     │
@@ -98,33 +98,37 @@
   | `get_key_metrics`  | 主要财务摘要       | ✅ 同花顺摘要                                    |
   | `get_forecast`     | 业绩报告/预告      | ✅ 东财业绩报表                                  |
   | `get_capital_flow` | 个股资金流向       | ⚠️ 东财接口被代理拦截，API 位置留空 + 替代建议 |
-
 - **记忆层 `memory_store.py`**：`long_memory` 表 + 让 LLM 把每轮结果抽成稳定事实存起来，下一轮再喂回去。
 - **前端**：实时显示工具调用进度（🔧），K 线图照旧能画。
 - **端口**：8003。
 
-### v5 — LangGraph 编排（规划中，还没写）
+### v5 — LangGraph 编排（已落地 ✅）
 
 - **目标**：把 v4 里我手搓的工具调用循环，换成 [LangGraph](https://github.com/langchain-ai/langgraph) 来编排，图结构更清晰、好调试也好扩展。
 - **设计（StateGraph / ReAct）**：
   ```
   START → agent(LLM+bind_tools, 注入长期记忆)
-            │ tools_condition
+            │ _should_continue
       ┌─────┴──────┐
    有调用        无调用
     │              │
-  tools(ToolNode)  END
-    │
-  agent ←──┘
-    │
-  memory(抽取长期记忆) → END
+  tools(ToolNode)  memory(抽取长期记忆)
+    │              │
+  agent ←──────────┘
+            │
+           END
   ```
+  - `agent` 节点：`ChatGoogleGenerativeAI`（Gemini/Gemma）+ `bind_tools(TOOLS)`，注入系统提示与长期记忆，产出 `AIMessage`（可能含 `tool_calls`）。
+  - `tools` 节点：LangGraph 预置 `ToolNode(TOOLS)` 执行工具调用，产出 `ToolMessage`。
+  - `memory` 节点：对话结束后抽取本轮工具事实，合并进长期记忆并持久化（复用 v4 的 `memory_store`）。
+  - 条件边 `_should_continue`：最后一条消息仍含 `tool_calls` 则回到 `tools`，否则进入 `memory` 收尾。
+  - **短期记忆**：用 LangGraph 的 `MemorySaver` checkpointer 管理（`thread_id = session_id`），不再手动拼装 history。
 - **复用**：v4 的 `tools.py`、`memory_store.py`、`session_store.py`、`static/`。
 - **新增**：`graph_agent.py`（LangGraph 编排）、`main.py` 改为调用 `graph_app.invoke(...)`。
 - **依赖**：`langchain`、`langgraph`、`langchain-google-genai`。
-- **端口**：8004（计划）。
+- **端口**：8004。
 
-> 这块我还在学，等踩完坑再补上，欢迎有经验的朋友指条明路。
+> 踩坑小结：LangChain 的 `@tool` 包装器负责把 v4 的工具函数转成 LangGraph 能识别的 schema；`ToolNode` 自动处理 `tool_call_id` 与 `ToolMessage` 的配对，比手写循环省心不少。无 `GEMINI_API_KEY` 时仍走 v4 同款关键词降级，依赖缺失也能正常导入模块。
 
 ---
 
@@ -180,23 +184,23 @@ A small **stock-information assistant** for individual A-share stocks. It can lo
 ├── 2026-07-12-v2/            # + SSE streaming + session export + web fallback
 ├── 2026-07-12-v3/            # + LLM (Gemini/Gemma) intent parsing + intraday + security
 ├── 2026-07-12-v4/            # + multi-turn memory + tool calling (full dimensions)
-└── 2026-07-12-v5/            # (Planned) LangGraph-orchestrated Agent
+└── 2026-07-12-v5/            # + LangGraph-orchestrated Agent (StateGraph + ToolNode + MemorySaver)
 ```
 
-> The project evolves **incrementally**: v1 → v4 are implemented and verified; v5 (LangGraph) is planned. Each version lives in its own folder so I can compare/rollback, and you can jump to whichever version interests you.
+> The project evolves **incrementally**: v1 → v5 are implemented and verified. Each version lives in its own folder so I can compare/rollback, and you can jump to whichever version interests you.
 
 ---
 
 ## Tech Stack
 
-| Layer        | Choice                                                                |
-| ------------ | --------------------------------------------------------------------- |
-| Backend      | FastAPI + Uvicorn                                                     |
-| LLM          | Google Gemini / Gemma 4 31B (`gemma-4-31b-it`), key read from env only |
-| Data         | AKShare (Sina / CNINFO / THS / Eastmoney, multi-source)              |
-| Storage      | SQLite (sessions, messages, long-term memory)                        |
-| Frontend     | Vanilla JS + ECharts 5 (candlestick), SSE streaming                  |
-| Agent orchestration | v4: hand-written ReAct loop; v5: planned with LangGraph      |
+| Layer               | Choice                                                                   |
+| ------------------- | ------------------------------------------------------------------------ |
+| Backend             | FastAPI + Uvicorn                                                        |
+| LLM                 | Google Gemini / Gemma 4 31B (`gemma-4-31b-it`), key read from env only |
+| Data                | AKShare (Sina / CNINFO / THS / Eastmoney, multi-source)                  |
+| Storage             | SQLite (sessions, messages, long-term memory)                            |
+| Frontend            | Vanilla JS + ECharts 5 (candlestick), SSE streaming                      |
+| Agent orchestration | v4: hand-written ReAct loop; v5: planned with LangGraph                  |
 
 ---
 
@@ -235,6 +239,7 @@ Below are my casual "learning notes" from building each version — written loos
 
 - **Goal**: let the Agent decide which tools to call, and remember what was discussed earlier.
 - **Architecture**:
+
   ```
   user message
     │
@@ -250,44 +255,48 @@ Below are my casual "learning notes" from building each version — written loos
   ```
 - **Tool layer `tools.py`** (covers all dimensions for the target stock — the part I spent most time on):
 
-  | Tool                 | Dimension                | Status                                          |
-  | -------------------- | ------------------------ | ----------------------------------------------- |
-  | `get_profile`      | profile / board / business | ✅ cninfo                                     |
-  | `get_history`      | historical daily K-line  | ✅ Sina daily                                   |
-  | `get_intraday`     | intraday minute bars     | ✅ Sina minute                                  |
-  | `get_financials`   | three financial statements | ✅ Sina financials                            |
-  | `get_dividend`     | dividends / bonuses      | ✅ cninfo                                       |
-  | `get_indicators`   | valuation & financial metrics | ✅ financial-analysis indicator             |
-  | `get_key_metrics`  | key financial summary    | ✅ THS summary                                  |
-  | `get_forecast`     | earnings report / forecast | ✅ Eastmoney earnings                          |
-  | `get_capital_flow` | individual capital flow  | ⚠️ Eastmoney blocked by proxy; API left empty + alternative suggested |
-
+  | Tool                 | Dimension                     | Status                                                                  |
+  | -------------------- | ----------------------------- | ----------------------------------------------------------------------- |
+  | `get_profile`      | profile / board / business    | ✅ cninfo                                                               |
+  | `get_history`      | historical daily K-line       | ✅ Sina daily                                                           |
+  | `get_intraday`     | intraday minute bars          | ✅ Sina minute                                                          |
+  | `get_financials`   | three financial statements    | ✅ Sina financials                                                      |
+  | `get_dividend`     | dividends / bonuses           | ✅ cninfo                                                               |
+  | `get_indicators`   | valuation & financial metrics | ✅ financial-analysis indicator                                         |
+  | `get_key_metrics`  | key financial summary         | ✅ THS summary                                                          |
+  | `get_forecast`     | earnings report / forecast    | ✅ Eastmoney earnings                                                   |
+  | `get_capital_flow` | individual capital flow       | ⚠️ Eastmoney blocked by proxy; API left empty + alternative suggested |
 - **Memory layer `memory_store.py`**: `long_memory` table + LLM distills each turn into stable facts, fed back next round.
 - **Frontend**: shows live tool-call progress (🔧), candlestick chart still works.
 - **Port**: 8003.
 
-### v5 — LangGraph orchestration (planned, not yet written)
+### v5 — LangGraph orchestration (implemented ✅)
 
 - **Goal**: replace the hand-rolled tool-calling loop in v4 with [LangGraph](https://github.com/langchain-ai/langgraph) for a declarative, observable, extensible Agent graph.
 - **Design (StateGraph / ReAct)**:
   ```
   START → agent(LLM+bind_tools, inject long-term memory)
-            │ tools_condition
+            │ _should_continue
       ┌─────┴──────┐
    has call     no call
     │              │
-  tools(ToolNode)  END
-    │
-  agent ←──┘
-    │
-  memory(distill long-term) → END
+  tools(ToolNode)  memory(distill long-term)
+    │              │
+  agent ←──────────┘
+            │
+           END
   ```
+  - `agent` node: `ChatGoogleGenerativeAI` (Gemini/Gemma) + `bind_tools(TOOLS)`, injects system prompt + long-term memory, emits `AIMessage` (may contain `tool_calls`).
+  - `tools` node: LangGraph's built-in `ToolNode(TOOLS)` runs the tool calls, emits `ToolMessage`.
+  - `memory` node: after the conversation ends, distills this turn's tool facts and merges them into long-term memory (reuses v4's `memory_store`).
+  - Conditional edge `_should_continue`: if the last message still has `tool_calls`, loop back to `tools`; otherwise go to `memory` to wrap up.
+  - **Short-term memory**: managed by LangGraph's `MemorySaver` checkpointer (`thread_id = session_id`); no more manual history assembly.
 - **Reuse**: v4's `tools.py`, `memory_store.py`, `session_store.py`, `static/`.
 - **New**: `graph_agent.py` (LangGraph orchestration), `main.py` calls `graph_app.invoke(...)`.
 - **Deps**: `langchain`, `langgraph`, `langchain-google-genai`.
-- **Port**: 8004 (planned).
+- **Port**: 8004.
 
-> I'm still learning this part; I'll fill it in after I've stepped on the rakes. Pointers from anyone with experience are very welcome.
+> Lessons learned: LangChain's `@tool` decorator turns v4's tool functions into schemas LangGraph understands; `ToolNode` handles `tool_call_id` ↔ `ToolMessage` pairing automatically, which is far less fiddly than the hand-written loop. Without `GEMINI_API_KEY` it still falls back to v4's keyword path, and the module imports fine even if the deps are missing.
 
 ---
 
