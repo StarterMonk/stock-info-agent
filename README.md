@@ -130,6 +130,113 @@
 
 > 踩坑小结：LangChain 的 `@tool` 包装器负责把 v4 的工具函数转成 LangGraph 能识别的 schema；`ToolNode` 自动处理 `tool_call_id` 与 `ToolMessage` 的配对，比手写循环省心不少。无 `GEMINI_API_KEY` 时仍走 v4 同款关键词降级，依赖缺失也能正常导入模块。
 
+### v5 架构图
+
+**整体架构（分层）**
+
+```mermaid
+flowchart TB
+    subgraph FE["前端 (static/)"]
+        UI["index.html + app.js<br/>ECharts K线 / SSE 流式渲染"]
+    end
+    subgraph API["FastAPI 层 (main.py :8004)"]
+        ROUTES["/api/chat · /api/chat/stream<br/>/api/sessions · /api/sessions/export"]
+    end
+    subgraph AGENT["Agent 编排层 (graph_agent.py)"]
+        GRAPH["LangGraph StateGraph<br/>agent → tools → memory"]
+        MEM["MemorySaver<br/>(短期记忆 checkpointer)"]
+    end
+    subgraph TOOLS["工具层 (tools.py, 9 个 @tool)"]
+        T1["get_profile"] & T2["get_history"] & T3["get_intraday"]
+        T4["get_financials"] & T5["get_dividend"] & T6["get_capital_flow ⚠️"]
+        T7["get_indicators"] & T8["get_key_metrics"] & T9["get_forecast"]
+    end
+    subgraph EXT["外部依赖"]
+        LLM["Gemini/Gemma<br/>(ChatGoogleGenerativeAI)"]
+        AK["AKShare 多源数据"]
+        DB[("SQLite<br/>sessions / messages / long_memory")]
+    end
+    UI -- "HTTP / SSE" --> ROUTES
+    ROUTES --> GRAPH
+    GRAPH <--> MEM
+    GRAPH --> LLM
+    GRAPH --> TOOLS
+    TOOLS --> AK
+    ROUTES --> DB
+    GRAPH --> DB
+```
+
+**LangGraph 状态图（核心）**
+
+```mermaid
+stateDiagram-v2
+    [*] --> agent
+    agent --> tools: 最后一条消息<br/>含 tool_calls
+    agent --> memory: 无 tool_calls<br/>(已得到最终回答)
+    tools --> agent: 执行完工具<br/>追加 ToolMessage
+    memory --> [*]: 抽取本轮事实<br/>写入长期记忆
+    note right of agent
+        ChatGoogleGenerativeAI
+        + bind_tools(TOOLS)
+        注入 system 提示 + 长期记忆
+        产出 AIMessage
+    end note
+    note right of tools
+        LangGraph 预置 ToolNode
+        自动配对 tool_call_id
+        产出 ToolMessage
+    end note
+    note right of memory
+        复用 v4 memory_store
+        合并进 long_memory 表
+    end note
+```
+
+**一次对话的生命周期**
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant API as main.py
+    participant G as StateGraph
+    participant A as agent节点
+    participant L as Gemini LLM
+    participant T as tools节点
+    participant M as memory节点
+    participant DB as SQLite
+    U->>API: POST /api/chat {session_id, message}
+    API->>G: invoke({messages:[Human], session_id})
+    Note over G: thread_id=session_id<br/>短期记忆从 MemorySaver 取回
+    G->>A: 注入 system+长期记忆
+    A->>L: 带 tools 的提问
+    L-->>A: AIMessage(tool_calls=[get_history])
+    A->>T: 执行工具
+    T->>T: 调 tools.py → AKShare
+    T-->>A: ToolMessage(结果)
+    A->>L: 带上工具结果再问
+    L-->>A: AIMessage(纯文本回答)
+    A->>M: 无 tool_calls → 进入 memory
+    M->>DB: 抽取事实 → 更新 long_memory
+    G-->>API: {reply, tool_calls, chart}
+    API->>DB: 存 user/assistant 消息
+    API-->>U: ChatResponse
+```
+
+**v4 → v5 关键变化**
+
+```mermaid
+flowchart LR
+    subgraph V4["v4 手写循环"]
+        L1["for _ in range(5):<br/>generate() → 解析 functionCall<br/>→ call_tool() → 拼 functionResponse<br/>→ 再 generate()"]
+    end
+    subgraph V5["v5 LangGraph"]
+        L2["StateGraph 声明节点<br/>ToolNode 自动配对<br/>MemorySaver 管短期记忆"]
+    end
+    V4 -->|"更清晰 / 好调试 / 易扩展"| V5
+```
+
+> 更完整的图与文件职责对照，见 `2026-07-12-v5/README.md`。
+
 ---
 
 ## 快速开始（以 v4 为例）
@@ -297,6 +404,113 @@ Below are my casual "learning notes" from building each version — written loos
 - **Port**: 8004.
 
 > Lessons learned: LangChain's `@tool` decorator turns v4's tool functions into schemas LangGraph understands; `ToolNode` handles `tool_call_id` ↔ `ToolMessage` pairing automatically, which is far less fiddly than the hand-written loop. Without `GEMINI_API_KEY` it still falls back to v4's keyword path, and the module imports fine even if the deps are missing.
+
+### v5 Architecture Diagrams
+
+**Overall architecture (layered)**
+
+```mermaid
+flowchart TB
+    subgraph FE["Frontend (static/)"]
+        UI["index.html + app.js<br/>ECharts candlestick / SSE streaming"]
+    end
+    subgraph API["FastAPI layer (main.py :8004)"]
+        ROUTES["/api/chat · /api/chat/stream<br/>/api/sessions · /api/sessions/export"]
+    end
+    subgraph AGENT["Agent orchestration (graph_agent.py)"]
+        GRAPH["LangGraph StateGraph<br/>agent → tools → memory"]
+        MEM["MemorySaver<br/>(short-term checkpointer)"]
+    end
+    subgraph TOOLS["Tool layer (tools.py, 9 @tool)"]
+        T1["get_profile"] & T2["get_history"] & T3["get_intraday"]
+        T4["get_financials"] & T5["get_dividend"] & T6["get_capital_flow ⚠️"]
+        T7["get_indicators"] & T8["get_key_metrics"] & T9["get_forecast"]
+    end
+    subgraph EXT["External deps"]
+        LLM["Gemini/Gemma<br/>(ChatGoogleGenerativeAI)"]
+        AK["AKShare multi-source"]
+        DB[("SQLite<br/>sessions / messages / long_memory")]
+    end
+    UI -- "HTTP / SSE" --> ROUTES
+    ROUTES --> GRAPH
+    GRAPH <--> MEM
+    GRAPH --> LLM
+    GRAPH --> TOOLS
+    TOOLS --> AK
+    ROUTES --> DB
+    GRAPH --> DB
+```
+
+**LangGraph state graph (core)**
+
+```mermaid
+stateDiagram-v2
+    [*] --> agent
+    agent --> tools: last message<br/>has tool_calls
+    agent --> memory: no tool_calls<br/>(final answer ready)
+    tools --> agent: tool run done<br/>append ToolMessage
+    memory --> [*]: distill facts<br/>write long-term memory
+    note right of agent
+        ChatGoogleGenerativeAI
+        + bind_tools(TOOLS)
+        inject system prompt + long-term memory
+        emits AIMessage
+    end note
+    note right of tools
+        LangGraph built-in ToolNode
+        auto-pairs tool_call_id
+        emits ToolMessage
+    end note
+    note right of memory
+        reuses v4 memory_store
+        merges into long_memory table
+    end note
+```
+
+**Lifecycle of one conversation**
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant API as main.py
+    participant G as StateGraph
+    participant A as agent node
+    participant L as Gemini LLM
+    participant T as tools node
+    participant M as memory node
+    participant DB as SQLite
+    U->>API: POST /api/chat {session_id, message}
+    API->>G: invoke({messages:[Human], session_id})
+    Note over G: thread_id=session_id<br/>short-term memory from MemorySaver
+    G->>A: inject system + long-term memory
+    A->>L: prompt with tools
+    L-->>A: AIMessage(tool_calls=[get_history])
+    A->>T: run tool
+    T->>T: call tools.py → AKShare
+    T-->>A: ToolMessage(result)
+    A->>L: re-ask with tool result
+    L-->>A: AIMessage(plain text)
+    A->>M: no tool_calls → enter memory
+    M->>DB: distill facts → update long_memory
+    G-->>API: {reply, tool_calls, chart}
+    API->>DB: store user/assistant messages
+    API-->>U: ChatResponse
+```
+
+**v4 → v5 key changes**
+
+```mermaid
+flowchart LR
+    subgraph V4["v4 hand-written loop"]
+        L1["for _ in range(5):<br/>generate() → parse functionCall<br/>→ call_tool() → build functionResponse<br/>→ regenerate()"]
+    end
+    subgraph V5["v5 LangGraph"]
+        L2["StateGraph declares nodes<br/>ToolNode auto-pairs<br/>MemorySaver owns short-term"]
+    end
+    V4 -->|"clearer / debuggable / extensible"| V5
+```
+
+> For the full set of diagrams and a file-responsibility table, see `2026-07-12-v5/README.md`.
 
 ---
 
