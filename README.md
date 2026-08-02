@@ -1,541 +1,228 @@
-# 股票信息助手（Stock Info Agent）
+# 🚀 Stock-Info-Agent
 
-一个面向个股的**股票信息智能助手**，支持查询上市板块、主营业务、历史/盘中行情、财务报表、分红、业绩等多维度信息。系统采用「Agent + 工具调用」架构，数据主要来自 [AKShare](https://akshare.akfamily.xyz/) 中提供的 API，并辅以公开财经网站兜底。
+### 生产级 A 股 AI 助手 — LangGraph 编排 · 多轮对话 · 9 大股票工具
 
-> 先说在前面：这是我一边学 AI Agent、一边炒股时顺手做的小练习，纯属练手踩坑用。代码和思路都不算成熟，里面大概率有不少粗糙、甚至不对的地方。如果您刚好逛到这儿，欢迎随时拍砖、提建议，先谢过啦 🙏
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)
+![LangGraph](https://img.shields.io/badge/LangGraph-0.2%2B-orange?logo=langchain&logoColor=white)
+![AKShare](https://img.shields.io/badge/AKShare-1.14%2B-green)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-teal?logo=fastapi&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-gray)
 
 ---
 
-## 目录结构
+## 📑 目录
+
+- [项目简介](#-项目简介)
+- [特性亮点](#-特性亮点)
+- [架构设计](#-架构设计)
+- [快速开始](#-快速开始)
+- [工具能力表](#-工具能力表)
+- [环境变量](#-环境变量)
+- [v6 改进清单](#-v6-改进清单)
+- [项目结构](#-项目结构)
+- [技术栈](#-技术栈)
+- [历史版本导航](#-历史版本导航)
+- [License / 免责声明](#-license--免责声明)
+
+---
+
+## 📖 项目简介
+
+Stock-Info-Agent 是 `2026-07-11-Stock-Collector` 系列的**生产级 A 股 AI 助手**。当前最新版本为 **v6**，它在 v5（首次引入 LangGraph 声明式编排）的基础上，针对工程健壮性、性能与可维护性做了全面加固——消除冗余调用、补齐超时与容错、引入 SQLite WAL 模式与持久化 Checkpointer，让系统真正具备生产可用的稳定性。
+
+项目核心能力：用户通过浏览器与 AI 助手多轮对话，系统调用 [AKShare](https://akshare.akfamily.xyz/) 数据工具获取 A 股实时行情、公司资料、财务数据、资金流向等，并以文字 + ECharts 图表的形式返回分析结果。底层由 Gemini/Gemma 大模型驱动，无 Key 时自动降级为关键词模式。
+
+---
+
+## ✨ 特性亮点
+
+| 特性 | 说明 |
+|------|------|
+| 💬 多轮对话 | 基于 LangGraph StateGraph 管理上下文，短期记忆由 MemorySaver/SqliteSaver 自动维护 |
+| 🧠 长期记忆 | memory 节点在对话结束时抽取关键事实，持久化写入 SQLite `long_memory` 表 |
+| 🔧 9 大股票工具 | 覆盖公司资料、历史 K 线、分时行情、财务报表、分红、资金流向、技术指标、关键指标、盈利预测 |
+| 📊 图表可视化 | 前端 ECharts 渲染 K 线图、分时图，SSE 流式推送实时更新 |
+| 🔄 无 LLM 降级 | 未配置 `GEMINI_API_KEY` 时自动切换关键词驱动模式，核心功能仍可用 |
+| ⚡ Token 优化 | 工具消息截断 + `get_history` 限行 200 条 + TTL 缓存，减少无效 Token 消耗 |
+| 💾 持久化会话 | SQLite 单例 + WAL 模式，SqliteSaver Checkpointer 保证断线恢复 |
+| 🛡️ 容错与超时 | 全局 30s 超时保护、SSE 流容错、ChatRequest 参数校验 |
+
+---
+
+## 🏗️ 架构设计
+
+### 整体分层
+
+```mermaid
+graph TD
+    FE["前端 2026-07-12-v6/static/"]
+    API["FastAPI 2026-07-12-v6/main.py :8004"]
+    AGENT["Agent 编排层 2026-07-12-v6/graph_agent.py"]
+    TOOLS["工具层 2026-07-12-v6/tools.py"]
+    LLM["Gemini / Gemma LLM"]
+    DB[("SQLite")]
+
+    FE --> API
+    API --> AGENT
+    AGENT --> LLM
+    AGENT --> TOOLS
+    TOOLS -.-> DB
+    API -.-> DB
+```
+
+### LangGraph StateGraph 核心编排
+
+```mermaid
+graph TD
+    START((START)) --> agent
+    agent -->|有 tool_calls| tools
+    agent -->|无 tool_calls| memory
+    tools --> agent
+    memory --> END((END))
+```
+
+- **agent 节点**：`ChatGoogleGenerativeAI` + `bind_tools`，注入 system 提示 + 长期记忆，产出 `AIMessage`
+- **tools 节点**：LangGraph 预置 `ToolNode`，自动配对 `tool_call_id ↔ ToolMessage`
+- **memory 节点**：抽取本轮对话事实，写入 `long_memory` 表
+- **条件边 `_should_continue`**：根据最后一条消息是否含 `tool_calls` 决定继续调工具还是进入记忆收尾
+
+---
+
+## 🚀 快速开始
+
+**1. 进入 v6 目录并安装依赖**
+
+```bash
+cd 2026-07-12-v6
+pip install -r requirements.txt
+```
+
+**2. 配置环境变量**
+
+```bash
+cp .env.example .env
+# 编辑 .env，填入你的 Gemini API Key
+# GEMINI_API_KEY="your-api-key-here"
+# GEMINI_MODEL="gemma-4-31b-it"   # 可选，默认 gemma-4-31b-it
+```
+
+> 不填 `GEMINI_API_KEY` 也能运行——系统将退化为关键词驱动模式，适合体验流程。
+
+**3. 启动服务**
+
+```bash
+uvicorn main:app --port 8004
+```
+
+**4. 访问前端**
+
+浏览器打开 [http://127.0.0.1:8004](http://127.0.0.1:8004)
+
+---
+
+## 🔧 工具能力表
+
+| 工具 | 用途 | 典型示例 |
+|------|------|----------|
+| `get_profile` | 公司资料（上市板块、行业、主营业务） | "贵州茅台的主营业务是什么？" |
+| `get_history` | 历史日 K 线行情（开/收/高/低/量） | "比亚迪最近三个月的股价走势" |
+| `get_intraday` | 当日分时行情 | "中国平安今天的分时走势" |
+| `get_financials` | 财务报表数据 | "宁德时代最新财报" |
+| `get_dividend` | 分红派息记录 | "工商银行历年分红" |
+| `get_capital_flow` | 个股资金流向 | "隆基绿能今日资金流入情况" |
+| `get_indicators` | 技术指标（MA/MACD/KDJ 等） | "招商银行的 MACD 指标" |
+| `get_key_metrics` | 关键财务指标（PE/PB/ROE 等） | "腾讯的市盈率是多少" |
+| `get_forecast` | 盈利预测与分析师共识 | "中芯国际明年的盈利预测" |
+
+---
+
+## ⚙️ 环境变量
+
+| 变量名 | 必填 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `GEMINI_API_KEY` | 否 | — | Gemini API Key，留空则走关键词降级路径 |
+| `GEMINI_MODEL` | 否 | `gemma-4-31b-it` | 覆盖默认 LLM 模型 |
+| `V4_DB_PATH` | 否 | `v6_sessions.db` | SQLite 数据库文件路径 |
+
+---
+
+## ✅ v6 改进清单
+
+- [x] **消除双重记忆调用**：合并冗余的长期记忆读取，每轮只查一次
+- [x] **工具消息截断**：超长工具返回自动裁剪，避免 Token 爆炸
+- [x] **`get_history` 限行 200 + TTL 缓存**：限制返回行数并加本地缓存，降低重复请求开销
+- [x] **30s 全局超时**：LLM 调用与工具执行均受超时保护，防止请求挂死
+- [x] **SQLite 单例 + WAL 模式**：Write-Ahead Logging 提升并发读写性能
+- [x] **`asyncio.to_thread` 解阻塞**：同步 DB 操作异步化，不阻塞事件循环
+- [x] **`ChatRequest` 参数校验**：Pydantic 模型严格校验入参，防御非法请求
+- [x] **SSE 流容错**：流式推送异常时优雅降级，不中断前端连接
+- [x] **可观测性中间件**：请求日志 + 耗时统计，便于排查与性能分析
+- [x] **`SqliteSaver` 持久化 Checkpointer**：替代纯内存 `MemorySaver`，支持会话断线恢复
+
+---
+
+## 📁 项目结构
 
 ```
 2026-07-11-Stock-Collector/
-├── README.md                 # 本文件：项目总览与版本架构记录
-├── stock-info.agent.md       # VS Code Agent 定义（股票信息专员）
-├── 2026-07-12-v1/            # 基础版：FastAPI + 单轮查询
-├── 2026-07-12-v2/            # + SSE 流式 + 会话导出 + 网站兜底
-├── 2026-07-12-v3/            # + LLM(Gemini/Gemma) 意图解析 + 盘中查询 + 安全加固
-├── 2026-07-12-v4/            # + 多轮记忆 + 工具调用(Tool Calling) 全维度
-└── 2026-07-12-v5/            # + LangGraph 编排的 Agent（StateGraph + ToolNode + MemorySaver）
+├── README.md                       # 本文件：项目主页（基于 v6）
+├── stock-info.agent.md             # VS Code Agent 定义（股票信息专员）
+├── 2026-07-12-v6/                  # ✅ 最新版本（生产级）
+│   ├── .env.example                #   环境变量模板
+│   ├── .gitignore                  #   Git 忽略规则
+│   ├── README.md                   #   v6 独立说明
+│   ├── graph_agent.py              #   LangGraph StateGraph 编排
+│   ├── llm_client.py               #   Gemini REST 接入层（降级用）
+│   ├── main.py                     #   FastAPI 入口，路由 + 中间件 + SSE
+│   ├── memory_store.py             #   长期记忆持久化（SQLite long_memory 表）
+│   ├── requirements.txt            #   Python 依赖
+│   ├── session_store.py            #   会话与消息存储
+│   ├── tools.py                    #   9 个 AKShare 数据工具
+│   └── static/                     #   前端静态资源
+│       ├── index.html
+│       ├── app.js
+│       └── style.css
+├── 2026-07-12-v5/                  # LangGraph 编排初版
+├── 2026-07-12-v4/                  # 多轮记忆 + 工具调用
+├── 2026-07-12-v3/                  # LLM 意图解析 + 安全加固
+├── 2026-07-12-v2/                  # SSE 流式 + 会话导出 + 网站兜底
+└── 2026-07-12-v1/                  # 基础版：FastAPI + 单轮查询
 ```
-
-> 项目以**渐进式版本迭代**方式演进：v1 → v5 均已落地验证。每个版本独立成文件夹，方便我自己回头对比、回滚，也方便你挑感兴趣的版本看。
 
 ---
 
-## 技术栈
+## 🛠️ 技术栈
 
-| 层         | 选型                                                                  |
-| ---------- | --------------------------------------------------------------------- |
-| 后端       | FastAPI + Uvicorn                                                     |
-| LLM        | Google Gemini / Gemma 4 31B（`gemma-4-31b-it`），仅经环境变量读 Key |
-| 数据       | AKShare（新浪/巨潮/同花顺/东财等多源）                                |
-| 存储       | SQLite（会话、消息、长期记忆）                                        |
-| 前端       | 原生 JS + ECharts 5（K 线图），SSE 流式渲染                           |
-| Agent 编排 | v4 手写 ReAct 闭环；v5 用 LangGraph StateGraph 编排                  |
-
----
-
-## 版本架构与设计
-
-下面是我自己边做边记的「踩坑笔记」，写得比较随意，但尽量把每个版本为什么这么改讲清楚。
-
-### v1 — 基础查询助手
-
-- **目标**：能用 AKShare 查单只股票的「上市详情」与「历史日线」。
-- **架构**：
-  - `main.py`：FastAPI，`/api/sessions` 会话 CRUD、`/api/chat` 同步问答、静态资源挂载。
-  - `session_store.py`：SQLite 持久化会话与消息。
-  - `agent_runner.py`：`get_profile`（cninfo）、`get_history`（新浪日线）、`_resolve_code`、`web_fallback`。
-- **关键决策（踩坑）**：东方财富 `stock_individual_info_em` / `stock_zh_a_hist` 在我这台机器上被代理拦了（ProxyError），折腾半天没搞定，就换成了 `stock_profile_cninfo` + `stock_zh_a_daily`（新浪源），反而更稳。
-- **端口**：8000。
-
-### v2 — 流式与兜底
-
-- **新增**：
-  - `/api/chat/stream`：SSE 流式输出，打字机效果，体验好很多。
-  - `/api/sessions/{sid}/export`：会话导出（Markdown / JSON），方便复盘。
-  - `web_fallback`：AKShare 抽风时，去新浪/东方财富个股页兜底抓点信息。
-- **端口**：8001。
-
-### v3 — LLM 意图解析 + 安全
-
-- **新增**：
-  - `llm_client.py`：接上 Gemini/Gemma 的 `generateContent`，做意图解析（`parse_intent`）和会话标题生成（`summarize_title`）。
-  - `get_intraday`：盘中分时（新浪分钟线），还能定位到具体某一分钟。
-  - 第一条消息发完，自动把会话标题换成 LLM 生成的摘要，侧边栏清爽多了。
-- **安全加固（很重要）**：一开始图省事把 API Key 写死在代码里，后来意识到太危险，改成只从 `GEMINI_API_KEY` 环境变量读；顺手加了 `.env.example` 和 `.gitignore`，别把密钥提交上去。
-- **端口**：8002。
-
-### v4 — 多轮记忆 + 工具调用（当前最新可用版）
-
-- **目标**：让 Agent 自己决定该调哪些工具，并且能记住之前聊过啥。
-- **架构**：
-
-  ```
-  用户消息
-    │
-    ├─ 短期记忆：最近 12 轮 messages → Gemini contents
-    ├─ 长期记忆：long_memory 表 → 注入 system 上下文
-    ▼
-  agent_runner.run_agent()
-    │  LLM 生成（tools=TOOL_DECLARATIONS）
-    ├─ 含 functionCall → 执行 tools.call_tool → 回填 functionResponse → 再生成
-    └─ 纯文本 → 返回
-    │
-    └─ 每轮工具结果摘要 → memory_store.update_long_memory() 持久化
-  ```
-- **工具层 `tools.py`**（覆盖目标股票全部维度，这块是我花时间最多的）：
-
-  | 工具                 | 维度               | 状态                                             |
-  | -------------------- | ------------------ | ------------------------------------------------ |
-  | `get_profile`      | 公司资料/板块/主营 | ✅ cninfo                                        |
-  | `get_history`      | 历史日 K 线        | ✅ 新浪日线                                      |
-  | `get_intraday`     | 盘中分时           | ✅ 新浪分钟线                                    |
-  | `get_financials`   | 三大财务报表       | ✅ 新浪财报                                      |
-  | `get_dividend`     | 分红送配           | ✅ cninfo                                        |
-  | `get_indicators`   | 估值与财务指标     | ✅ 财务分析指标                                  |
-  | `get_key_metrics`  | 主要财务摘要       | ✅ 同花顺摘要                                    |
-  | `get_forecast`     | 业绩报告/预告      | ✅ 东财业绩报表                                  |
-  | `get_capital_flow` | 个股资金流向       | ⚠️ 东财接口被代理拦截，API 位置留空 + 替代建议 |
-- **记忆层 `memory_store.py`**：`long_memory` 表 + 让 LLM 把每轮结果抽成稳定事实存起来，下一轮再喂回去。
-- **前端**：实时显示工具调用进度（🔧），K 线图照旧能画。
-- **端口**：8003。
-
-### v5 — LangGraph 编排（已落地 ✅）
-
-- **目标**：把 v4 里我手搓的工具调用循环，换成 [LangGraph](https://github.com/langchain-ai/langgraph) 来编排，图结构更清晰、好调试也好扩展。
-- **设计（StateGraph / ReAct）**：
-  ```
-  START → agent(LLM+bind_tools, 注入长期记忆)
-            │ _should_continue
-      ┌─────┴──────┐
-   有调用        无调用
-    │              │
-  tools(ToolNode)  memory(抽取长期记忆)
-    │              │
-  agent ←──────────┘
-            │
-           END
-  ```
-  - `agent` 节点：`ChatGoogleGenerativeAI`（Gemini/Gemma）+ `bind_tools(TOOLS)`，注入系统提示与长期记忆，产出 `AIMessage`（可能含 `tool_calls`）。
-  - `tools` 节点：LangGraph 预置 `ToolNode(TOOLS)` 执行工具调用，产出 `ToolMessage`。
-  - `memory` 节点：对话结束后抽取本轮工具事实，合并进长期记忆并持久化（复用 v4 的 `memory_store`）。
-  - 条件边 `_should_continue`：最后一条消息仍含 `tool_calls` 则回到 `tools`，否则进入 `memory` 收尾。
-  - **短期记忆**：用 LangGraph 的 `MemorySaver` checkpointer 管理（`thread_id = session_id`），不再手动拼装 history。
-- **复用**：v4 的 `tools.py`、`memory_store.py`、`session_store.py`、`static/`。
-- **新增**：`graph_agent.py`（LangGraph 编排）、`main.py` 改为调用 `graph_app.invoke(...)`。
-- **依赖**：`langchain`、`langgraph`、`langchain-google-genai`。
-- **端口**：8004。
-
-> 踩坑小结：LangChain 的 `@tool` 包装器负责把 v4 的工具函数转成 LangGraph 能识别的 schema；`ToolNode` 自动处理 `tool_call_id` 与 `ToolMessage` 的配对，比手写循环省心不少。无 `GEMINI_API_KEY` 时仍走 v4 同款关键词降级，依赖缺失也能正常导入模块。
-
-### v5 架构图
-
-**整体架构（分层）**
-
-```mermaid
-flowchart TB
-    subgraph FE["前端 (static/)"]
-        UI["index.html + app.js<br/>ECharts K线 / SSE 流式渲染"]
-    end
-    subgraph API["FastAPI 层 (main.py :8004)"]
-        ROUTES["/api/chat · /api/chat/stream<br/>/api/sessions · /api/sessions/export"]
-    end
-    subgraph AGENT["Agent 编排层 (graph_agent.py)"]
-        GRAPH["LangGraph StateGraph<br/>agent → tools → memory"]
-        MEM["MemorySaver<br/>(短期记忆 checkpointer)"]
-    end
-    subgraph TOOLS["工具层 (tools.py, 9 个 @tool)"]
-        T1["get_profile"] & T2["get_history"] & T3["get_intraday"]
-        T4["get_financials"] & T5["get_dividend"] & T6["get_capital_flow ⚠️"]
-        T7["get_indicators"] & T8["get_key_metrics"] & T9["get_forecast"]
-    end
-    subgraph EXT["外部依赖"]
-        LLM["Gemini/Gemma<br/>(ChatGoogleGenerativeAI)"]
-        AK["AKShare 多源数据"]
-        DB[("SQLite<br/>sessions / messages / long_memory")]
-    end
-    UI -- "HTTP / SSE" --> ROUTES
-    ROUTES --> GRAPH
-    GRAPH <--> MEM
-    GRAPH --> LLM
-    GRAPH --> TOOLS
-    TOOLS --> AK
-    ROUTES --> DB
-    GRAPH --> DB
-```
-
-**LangGraph 状态图（核心）**
-
-```mermaid
-stateDiagram-v2
-    [*] --> agent
-    agent --> tools: 最后一条消息<br/>含 tool_calls
-    agent --> memory: 无 tool_calls<br/>(已得到最终回答)
-    tools --> agent: 执行完工具<br/>追加 ToolMessage
-    memory --> [*]: 抽取本轮事实<br/>写入长期记忆
-    note right of agent
-        ChatGoogleGenerativeAI
-        + bind_tools(TOOLS)
-        注入 system 提示 + 长期记忆
-        产出 AIMessage
-    end note
-    note right of tools
-        LangGraph 预置 ToolNode
-        自动配对 tool_call_id
-        产出 ToolMessage
-    end note
-    note right of memory
-        复用 v4 memory_store
-        合并进 long_memory 表
-    end note
-```
-
-**一次对话的生命周期**
-
-```mermaid
-sequenceDiagram
-    participant U as 用户
-    participant API as main.py
-    participant G as StateGraph
-    participant A as agent节点
-    participant L as Gemini LLM
-    participant T as tools节点
-    participant M as memory节点
-    participant DB as SQLite
-    U->>API: POST /api/chat {session_id, message}
-    API->>G: invoke({messages:[Human], session_id})
-    Note over G: thread_id=session_id<br/>短期记忆从 MemorySaver 取回
-    G->>A: 注入 system+长期记忆
-    A->>L: 带 tools 的提问
-    L-->>A: AIMessage(tool_calls=[get_history])
-    A->>T: 执行工具
-    T->>T: 调 tools.py → AKShare
-    T-->>A: ToolMessage(结果)
-    A->>L: 带上工具结果再问
-    L-->>A: AIMessage(纯文本回答)
-    A->>M: 无 tool_calls → 进入 memory
-    M->>DB: 抽取事实 → 更新 long_memory
-    G-->>API: {reply, tool_calls, chart}
-    API->>DB: 存 user/assistant 消息
-    API-->>U: ChatResponse
-```
-
-**v4 → v5 关键变化**
-
-```mermaid
-flowchart LR
-    subgraph V4["v4 手写循环"]
-        L1["for _ in range(5):<br/>generate() → 解析 functionCall<br/>→ call_tool() → 拼 functionResponse<br/>→ 再 generate()"]
-    end
-    subgraph V5["v5 LangGraph"]
-        L2["StateGraph 声明节点<br/>ToolNode 自动配对<br/>MemorySaver 管短期记忆"]
-    end
-    V4 -->|"更清晰 / 好调试 / 易扩展"| V5
-```
-
-> 更完整的图与文件职责对照，见 `2026-07-12-v5/README.md`。
+| 技术 | 作用 |
+|------|------|
+| **LangGraph** | 声明式 StateGraph 编排，管理 agent → tools → memory 三节点流转 |
+| **LangChain** | 消息抽象（HumanMessage/AIMessage/ToolMessage）、工具绑定、LLM 接口 |
+| **AKShare** | A 股多源金融数据接口，提供行情、财务、资金等底层数据 |
+| **FastAPI** | 异步 Web 框架，提供 REST API 与 SSE 流式推送 |
+| **SQLite + WAL** | 轻量持久化存储，WAL 模式提升并发性能 |
+| **ECharts** | 前端图表库，渲染 K 线图、分时图等可视化 |
+| **Gemini / Gemma** | Google 大语言模型，驱动自然语言理解与工具调用 |
 
 ---
 
-## 快速开始（以 v4 为例）
+## 📚 历史版本导航
 
-```bash
-cd 2026-07-12-v4
-source ../2026-07-12-v1/.venv/bin/activate   # 复用 v1 的虚拟环境
-pip install -r requirements.txt
-export GEMINI_API_KEY="你的Key"               # 可选，留空则降级关键词驱动
-export V4_DB_PATH="$(pwd)/v4_sessions.db"
-uvicorn main:app --port 8003
-```
+本项目以**渐进式版本迭代**方式演进，v1 → v6 均已落地验证。每个版本独立成文件夹，方便对比与回滚。上方内容基于最新的 **v6**，以下是早期版本速览：
 
-浏览器打开 http://127.0.0.1:8003
+| 版本 | 目录 | 关键词 |
+|------|------|--------|
+| v1 | [`2026-07-12-v1/`](2026-07-12-v1/) | 基础版：FastAPI + 单轮查询 |
+| v2 | [`2026-07-12-v2/`](2026-07-12-v2/) | + SSE 流式 + 会话导出 + 网站兜底 |
+| v3 | [`2026-07-12-v3/`](2026-07-12-v3/) | + LLM (Gemini/Gemma) 意图解析 + 盘中查询 + 安全加固 |
+| v4 | [`2026-07-12-v4/`](2026-07-12-v4/) | + 多轮记忆 + 工具调用 (Tool Calling) 全维度 |
+| v5 | [`2026-07-12-v5/`](2026-07-12-v5/) | + LangGraph 编排 (StateGraph + ToolNode + MemorySaver) |
 
-> 小提示：不填 `GEMINI_API_KEY` 也能跑，只是会退化成「关键词驱动」的简化模式，用来体验流程完全够用。
-
----
-
-## 已知限制
-
-- 我这台机器网络下，东方财富 push2 行情接口被代理拦了，`get_capital_flow`（个股资金流向）暂时用不了；我按需求把 API 调用位置先留空，并给了替代方案（北向/板块资金流）。如果你那边网络通，填上对应调用就行。
-- LLM 工具调用闭环需要配置 `GEMINI_API_KEY`；没配的话走关键词降级路径（已验证可用）。
-
-## 许可证
-
-MIT（如需商用请自行确认数据源合规）。
+> 各版本的详细设计说明与架构图，请参阅对应子目录下的 `README.md`。
 
 ---
 
----
+## 📄 License / 免责声明
 
-# English Version
+本项目基于 **MIT License** 开源。
 
-# Stock Info Agent
-
-A small **stock-information assistant** for individual A-share stocks. It can look up things like the listing board, main business, historical/intraday prices, financial statements, dividends, earnings, and more. The architecture is "Agent + tool calling", with data mainly from the [AKShare](https://akshare.akfamily.xyz/) APIs, plus a fallback to public finance websites.
-
-> A quick disclaimer up front: this is a side project I built while learning AI Agents (and while dabbling in the stock market). It's purely for practice and for stepping on as many rakes as possible. The code and design are far from polished, and there are very likely rough — or simply wrong — spots. If you happen to stumble upon this repo, feedback and suggestions are more than welcome. Thank you 🙏
-
-> This document comes in **中文版 (Chinese)** and **English Version** — same content, pick whichever you prefer.
-
----
-
-## Project Structure
-
-```
-2026-07-11-Stock-Collector/
-├── README.md                 # This file: overview & version notes
-├── stock-info.agent.md       # VS Code Agent definition (stock info specialist)
-├── 2026-07-12-v1/            # Baseline: FastAPI + single-turn query
-├── 2026-07-12-v2/            # + SSE streaming + session export + web fallback
-├── 2026-07-12-v3/            # + LLM (Gemini/Gemma) intent parsing + intraday + security
-├── 2026-07-12-v4/            # + multi-turn memory + tool calling (full dimensions)
-└── 2026-07-12-v5/            # + LangGraph-orchestrated Agent (StateGraph + ToolNode + MemorySaver)
-```
-
-> The project evolves **incrementally**: v1 → v5 are implemented and verified. Each version lives in its own folder so I can compare/rollback, and you can jump to whichever version interests you.
-
----
-
-## Tech Stack
-
-| Layer               | Choice                                                                   |
-| ------------------- | ------------------------------------------------------------------------ |
-| Backend             | FastAPI + Uvicorn                                                        |
-| LLM                 | Google Gemini / Gemma 4 31B (`gemma-4-31b-it`), key read from env only |
-| Data                | AKShare (Sina / CNINFO / THS / Eastmoney, multi-source)                  |
-| Storage             | SQLite (sessions, messages, long-term memory)                            |
-| Frontend            | Vanilla JS + ECharts 5 (candlestick), SSE streaming                      |
-| Agent orchestration | v4: hand-written ReAct loop; v5: planned with LangGraph                  |
-
----
-
-## Version Architecture & Design
-
-Below are my casual "learning notes" from building each version — written loosely, but I try to explain *why* each change was made.
-
-### v1 — Baseline query assistant
-
-- **Goal**: query a stock's "listing profile" and "historical daily prices" via AKShare.
-- **Architecture**:
-  - `main.py`: FastAPI, `/api/sessions` CRUD, `/api/chat` sync Q&A, static mount.
-  - `session_store.py`: SQLite persistence for sessions & messages.
-  - `agent_runner.py`: `get_profile` (cninfo), `get_history` (Sina daily), `_resolve_code`, `web_fallback`.
-- **Key decision (a gotcha)**: Eastmoney's `stock_individual_info_em` / `stock_zh_a_hist` were blocked by a proxy on my machine (ProxyError). After struggling with it, I switched to `stock_profile_cninfo` + `stock_zh_a_daily` (Sina source), which turned out more stable.
-- **Port**: 8000.
-
-### v2 — Streaming & fallback
-
-- **Added**:
-  - `/api/chat/stream`: SSE streaming output (typewriter effect), much nicer UX.
-  - `/api/sessions/{sid}/export`: session export (Markdown / JSON) for review.
-  - `web_fallback`: when AKShare misbehaves, scrape Sina/Eastmoney stock pages as a backup.
-- **Port**: 8001.
-
-### v3 — LLM intent parsing + security
-
-- **Added**:
-  - `llm_client.py`: wired up Gemini/Gemma `generateContent` for intent parsing (`parse_intent`) and session-title generation (`summarize_title`).
-  - `get_intraday`: intraday minute bars (Sina), can locate a specific minute.
-  - After the first message, the session title auto-updates to an LLM summary — sidebar stays tidy.
-- **Security hardening (important)**: I originally hardcoded the API key for convenience, then realized how risky that was and switched to reading only from the `GEMINI_API_KEY` env var; added `.env.example` and `.gitignore` so secrets never get committed.
-- **Port**: 8002.
-
-### v4 — Multi-turn memory + tool calling (latest usable version)
-
-- **Goal**: let the Agent decide which tools to call, and remember what was discussed earlier.
-- **Architecture**:
-
-  ```
-  user message
-    │
-    ├─ short-term memory: last 12 turns → Gemini contents
-    ├─ long-term memory: long_memory table → injected into system context
-    ▼
-  agent_runner.run_agent()
-    │  LLM generates (tools=TOOL_DECLARATIONS)
-    ├─ has functionCall → run tools.call_tool → feed back functionResponse → regenerate
-    └─ plain text → return
-    │
-    └─ per-turn tool-result summary → memory_store.update_long_memory() persists
-  ```
-- **Tool layer `tools.py`** (covers all dimensions for the target stock — the part I spent most time on):
-
-  | Tool                 | Dimension                     | Status                                                                  |
-  | -------------------- | ----------------------------- | ----------------------------------------------------------------------- |
-  | `get_profile`      | profile / board / business    | ✅ cninfo                                                               |
-  | `get_history`      | historical daily K-line       | ✅ Sina daily                                                           |
-  | `get_intraday`     | intraday minute bars          | ✅ Sina minute                                                          |
-  | `get_financials`   | three financial statements    | ✅ Sina financials                                                      |
-  | `get_dividend`     | dividends / bonuses           | ✅ cninfo                                                               |
-  | `get_indicators`   | valuation & financial metrics | ✅ financial-analysis indicator                                         |
-  | `get_key_metrics`  | key financial summary         | ✅ THS summary                                                          |
-  | `get_forecast`     | earnings report / forecast    | ✅ Eastmoney earnings                                                   |
-  | `get_capital_flow` | individual capital flow       | ⚠️ Eastmoney blocked by proxy; API left empty + alternative suggested |
-- **Memory layer `memory_store.py`**: `long_memory` table + LLM distills each turn into stable facts, fed back next round.
-- **Frontend**: shows live tool-call progress (🔧), candlestick chart still works.
-- **Port**: 8003.
-
-### v5 — LangGraph orchestration (implemented ✅)
-
-- **Goal**: replace the hand-rolled tool-calling loop in v4 with [LangGraph](https://github.com/langchain-ai/langgraph) for a declarative, observable, extensible Agent graph.
-- **Design (StateGraph / ReAct)**:
-  ```
-  START → agent(LLM+bind_tools, inject long-term memory)
-            │ _should_continue
-      ┌─────┴──────┐
-   has call     no call
-    │              │
-  tools(ToolNode)  memory(distill long-term)
-    │              │
-  agent ←──────────┘
-            │
-           END
-  ```
-  - `agent` node: `ChatGoogleGenerativeAI` (Gemini/Gemma) + `bind_tools(TOOLS)`, injects system prompt + long-term memory, emits `AIMessage` (may contain `tool_calls`).
-  - `tools` node: LangGraph's built-in `ToolNode(TOOLS)` runs the tool calls, emits `ToolMessage`.
-  - `memory` node: after the conversation ends, distills this turn's tool facts and merges them into long-term memory (reuses v4's `memory_store`).
-  - Conditional edge `_should_continue`: if the last message still has `tool_calls`, loop back to `tools`; otherwise go to `memory` to wrap up.
-  - **Short-term memory**: managed by LangGraph's `MemorySaver` checkpointer (`thread_id = session_id`); no more manual history assembly.
-- **Reuse**: v4's `tools.py`, `memory_store.py`, `session_store.py`, `static/`.
-- **New**: `graph_agent.py` (LangGraph orchestration), `main.py` calls `graph_app.invoke(...)`.
-- **Deps**: `langchain`, `langgraph`, `langchain-google-genai`.
-- **Port**: 8004.
-
-> Lessons learned: LangChain's `@tool` decorator turns v4's tool functions into schemas LangGraph understands; `ToolNode` handles `tool_call_id` ↔ `ToolMessage` pairing automatically, which is far less fiddly than the hand-written loop. Without `GEMINI_API_KEY` it still falls back to v4's keyword path, and the module imports fine even if the deps are missing.
-
-### v5 Architecture Diagrams
-
-**Overall architecture (layered)**
-
-```mermaid
-flowchart TB
-    subgraph FE["Frontend (static/)"]
-        UI["index.html + app.js<br/>ECharts candlestick / SSE streaming"]
-    end
-    subgraph API["FastAPI layer (main.py :8004)"]
-        ROUTES["/api/chat · /api/chat/stream<br/>/api/sessions · /api/sessions/export"]
-    end
-    subgraph AGENT["Agent orchestration (graph_agent.py)"]
-        GRAPH["LangGraph StateGraph<br/>agent → tools → memory"]
-        MEM["MemorySaver<br/>(short-term checkpointer)"]
-    end
-    subgraph TOOLS["Tool layer (tools.py, 9 @tool)"]
-        T1["get_profile"] & T2["get_history"] & T3["get_intraday"]
-        T4["get_financials"] & T5["get_dividend"] & T6["get_capital_flow ⚠️"]
-        T7["get_indicators"] & T8["get_key_metrics"] & T9["get_forecast"]
-    end
-    subgraph EXT["External deps"]
-        LLM["Gemini/Gemma<br/>(ChatGoogleGenerativeAI)"]
-        AK["AKShare multi-source"]
-        DB[("SQLite<br/>sessions / messages / long_memory")]
-    end
-    UI -- "HTTP / SSE" --> ROUTES
-    ROUTES --> GRAPH
-    GRAPH <--> MEM
-    GRAPH --> LLM
-    GRAPH --> TOOLS
-    TOOLS --> AK
-    ROUTES --> DB
-    GRAPH --> DB
-```
-
-**LangGraph state graph (core)**
-
-```mermaid
-stateDiagram-v2
-    [*] --> agent
-    agent --> tools: last message<br/>has tool_calls
-    agent --> memory: no tool_calls<br/>(final answer ready)
-    tools --> agent: tool run done<br/>append ToolMessage
-    memory --> [*]: distill facts<br/>write long-term memory
-    note right of agent
-        ChatGoogleGenerativeAI
-        + bind_tools(TOOLS)
-        inject system prompt + long-term memory
-        emits AIMessage
-    end note
-    note right of tools
-        LangGraph built-in ToolNode
-        auto-pairs tool_call_id
-        emits ToolMessage
-    end note
-    note right of memory
-        reuses v4 memory_store
-        merges into long_memory table
-    end note
-```
-
-**Lifecycle of one conversation**
-
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant API as main.py
-    participant G as StateGraph
-    participant A as agent node
-    participant L as Gemini LLM
-    participant T as tools node
-    participant M as memory node
-    participant DB as SQLite
-    U->>API: POST /api/chat {session_id, message}
-    API->>G: invoke({messages:[Human], session_id})
-    Note over G: thread_id=session_id<br/>short-term memory from MemorySaver
-    G->>A: inject system + long-term memory
-    A->>L: prompt with tools
-    L-->>A: AIMessage(tool_calls=[get_history])
-    A->>T: run tool
-    T->>T: call tools.py → AKShare
-    T-->>A: ToolMessage(result)
-    A->>L: re-ask with tool result
-    L-->>A: AIMessage(plain text)
-    A->>M: no tool_calls → enter memory
-    M->>DB: distill facts → update long_memory
-    G-->>API: {reply, tool_calls, chart}
-    API->>DB: store user/assistant messages
-    API-->>U: ChatResponse
-```
-
-**v4 → v5 key changes**
-
-```mermaid
-flowchart LR
-    subgraph V4["v4 hand-written loop"]
-        L1["for _ in range(5):<br/>generate() → parse functionCall<br/>→ call_tool() → build functionResponse<br/>→ regenerate()"]
-    end
-    subgraph V5["v5 LangGraph"]
-        L2["StateGraph declares nodes<br/>ToolNode auto-pairs<br/>MemorySaver owns short-term"]
-    end
-    V4 -->|"clearer / debuggable / extensible"| V5
-```
-
-> For the full set of diagrams and a file-responsibility table, see `2026-07-12-v5/README.md`.
-
----
-
-## Quick Start (using v4 as example)
-
-```bash
-cd 2026-07-12-v4
-source ../2026-07-12-v1/.venv/bin/activate   # reuse v1's virtualenv
-pip install -r requirements.txt
-export GEMINI_API_KEY="your-key"              # optional; empty → keyword fallback
-export V4_DB_PATH="$(pwd)/v4_sessions.db"
-uvicorn main:app --port 8003
-```
-
-Open http://127.0.0.1:8003 in your browser.
-
-> Tip: it runs fine without `GEMINI_API_KEY` too — it just degrades to a "keyword-driven" simplified mode, which is enough to try the flow.
-
----
-
-## Known Limitations
-
-- On my network, Eastmoney's push2 quote interface is blocked by a proxy, so `get_capital_flow` (individual capital flow) is temporarily unavailable. Per the requirement, I left the API call location empty and provided an alternative (northbound / sector fund flow). If your network allows it, just fill in the corresponding call.
-- The LLM tool-calling loop needs `GEMINI_API_KEY`; without it, the keyword fallback path is used (verified working).
-
-## License
-
-MIT (if used commercially, please confirm data-source compliance yourself).
+> ⚠️ **免责声明**：本项目仅供学习与研究用途，不构成任何投资建议。股市有风险，投资需谨慎。数据来源于 [AKShare](https://akshare.akfamily.xyz/) 公开接口，准确性以官方数据为准。如需商用请自行确认数据源合规。
