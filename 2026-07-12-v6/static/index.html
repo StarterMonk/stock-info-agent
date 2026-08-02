@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>股票信息助手</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <button id="newBtn">+ 新建会话</button>
+      <ul id="sessionList"></ul>
+    </aside>
+    <main class="chat">
+      <header id="chatTitle">
+        股票信息助手
+        <span class="actions">
+          <button id="exportMd" title="导出为 Markdown">导出MD</button>
+          <button id="exportJson" title="导出为 JSON">导出JSON</button>
+        </span>
+      </header>
+      <div id="messages"></div>
+      <div id="chart" style="display:none;height:320px"></div>
+      <form id="form">
+        <input id="input" placeholder="例如：查询 贵州茅台(600519) 的上市板块和近一个月行情" autocomplete="off">
+        <button type="submit">发送</button>
+      </form>
+    </main>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
