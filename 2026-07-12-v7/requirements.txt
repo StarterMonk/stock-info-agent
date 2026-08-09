@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+akshare
+requests
+beautifulsoup4
+# v7-openrouter：LLM 直连 OpenRouter REST（OpenAI 兼容格式），无需 langchain/langgraph
+# LLM：OpenRouter；API Key 通过环境变量 OPENROUTER_API_KEY 提供
+# v7 新增：价格预测 + 定时增量同步 + 机器学习
+statsmodels
+apscheduler
+scikit-learn
+lightgbm        # 可选：机器学习方向模型；安装失败不影响基础流程
