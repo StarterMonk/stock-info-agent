@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>A股智能助手 · Stock Agent</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📈</text></svg>" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="app" v-cloak>
+
+  <div class="shell">
+
+    <!-- ======== 侧栏（会话列表） ======== -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo">📈</div>
+        <div class="brand-text">
+          <strong>A股智能助手</strong>
+          <span>v9 · 多智能体</span>
+        </div>
+      </div>
+      <button class="btn new" @click="newSession"><span class="plus">＋</span> 新会话</button>
+      <div class="session-list">
+        <div v-for="(s, idx) in sessions" :key="s.id" class="session-item"
+             :class="{ active: s.id === currentId }"
+             :style="{ '--i': idx }"
+             @click="selectSession(s.id)" @dblclick.stop="startRename(s)">
+          <span class="dot" :style="{ background: s.id === currentId ? 'var(--accent)' : 'var(--muted)' }"></span>
+          <template v-if="renamingId === s.id">
+            <input class="rename-input" v-model="renamingValue"
+                   @keydown.enter.prevent="confirmRename(s)"
+                   @keydown.esc="renamingId = null"
+                   @blur="confirmRename(s)"
+                   @click.stop />
+          </template>
+          <template v-else>
+            <span class="name">{{ s.title }}</span>
+          </template>
+          <button v-if="s.id === currentId && renamingId !== s.id" class="rename-btn" @click.stop="startRename(s)" title="重命名">✎</button>
+          <button class="delete-btn" @click.stop="deleteSession(s)" title="删除会话">✕</button>
+        </div>
+      </div>
+      <div class="sidebar-foot">
+        <button class="icon-btn" title="切换主题" @click="toggleTheme">☾</button>
+        <span class="hint" v-if="llmStatus === 'offline'" :title="llmError">大模型离线</span>
+      </div>
+    </aside>
+
+    <!-- ======== 主区（对话 + 图表 + 输入） ======== -->
+    <main class="main" :style="showChartDock ? { marginRight: dockWidth + 'px' } : {}">
+      <header class="topbar">
+        <h1>A 股智能助手</h1>
+        <div class="topbar-right">
+          <!-- v9: 智能体进度指示 -->
+          <div class="agent-progress" v-if="thinking">
+            <span class="agent-badge" :class="{ active: agentProgress.A }" title="Agent A: 数据获取">📡 A</span>
+            <span class="agent-badge" :class="{ active: agentProgress.C }" title="Agent C: 数据处理">🧮 C</span>
+            <span class="agent-badge" :class="{ active: agentProgress.B }" title="Agent B: 图表生成">📊 B</span>
+          </div>
+          <button v-if="lastChart" class="icon-btn chart-toggle" @click="toggleChart" title="图表工作台">📊</button>
+          <div class="status" :class="llmStatus">
+            <span class="pulse" :class="llmStatus"></span>
+            <span v-if="llmStatus === 'checking'" class="status-text">检测中…</span>
+            <span v-else-if="llmStatus === 'online'" class="status-text">大模型连接正常</span>
+            <span v-else class="status-text" :title="llmError">大模型离线</span>
+          </div>
+        </div>
+      </header>
+
+      <section class="chat" ref="chatRef">
+        <template v-if="messages.length === 0">
+          <div class="empty">
+            <div class="empty-mark">📈</div>
+            <p>用自然语言问行情、查财报、做分析</p>
+            <p class="empty-sub">例如：<code>分析 600519</code> · <code>预测一下 601318</code> · <code>查询宁德时代财务</code></p>
+          </div>
+        </template>
+
+        <div v-for="(m, i) in messages" :key="m.id" class="msg-row" :class="m.role"
+             :style="{ '--i': Math.min(i, 8) }">
+          <div class="avatar" :class="m.role">{{ m.role === 'user' ? '我' : 'A' }}</div>
+          <div class="bubble">
+            <div v-if="m.cats && m.cats.length" class="cats">
+              <div v-for="cat in m.cats" :key="cat.key" class="cat-block" :class="cat.key">
+                <div class="cat-head"><span class="cat-icon">{{ cat.icon }}</span><b>{{ cat.label }}</b></div>
+                <div class="cat-body" v-if="cat.text">{{ cat.text }}</div>
+                <table class="kv" v-if="cat.items && cat.items.length">
+                  <tr v-for="(val, key) in cat.items" :key="key"><td>{{ key }}</td><td>{{ val }}</td></tr>
+                </table>
+              </div>
+            </div>
+            <div class="plain" v-else-if="m.text">{{ m.text }}</div>
+            <div v-if="m.analysis" class="analysis-card">
+              <div class="cat-head"><span class="cat-icon">🧮</span><b>{{ m.analysis.algorithm_label }} · {{ m.analysis.code }}</b></div>
+              <div class="verdict">{{ m.analysis.verdict }}</div>
+              <div class="cat-body" style="margin-top:6px">
+                <span class="leg" v-for="(v,k) in m.analysis.latest" :key="k"><b>{{ k }}</b> {{ v }}</span>
+              </div>
+            </div>
+            <!-- v9: 消息内图表缩略图 -->
+            <div v-if="m.charts && m.charts.length" class="msg-charts">
+              <div v-for="(ch, ci) in m.charts" :key="ci" class="msg-chart-thumb" @click="lastChart = ch; showChartDock = true">
+                <span class="chart-thumb-icon">📊</span>
+                <span class="chart-thumb-label">{{ ch.title || '图表' }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="thinking && !messages.some(m => m.role === 'assistant')" class="msg-row assistant">
+          <div class="avatar assistant">A</div>
+          <div class="bubble typing"><i></i><i></i><i></i></div>
+        </div>
+      </section>
+
+      <footer class="composer">
+        <textarea ref="ta" v-model="input" rows="1" placeholder="输入消息，Enter 发送 / Shift+Enter 换行"
+                  @keydown.enter.exact.prevent="send" @input="autosize"></textarea>
+        <button class="btn send" :class="{ disabled: !input.trim() || thinking }" @click="send" aria-label="发送">
+          <span class="send-icon">➤</span>
+        </button>
+      </footer>
+    </main>
+
+    <!-- v9: 图表工作台 dock -->
+    <div v-if="showChartDock && lastChart" class="chart-dock" :style="{ width: dockWidth + 'px' }">
+      <div class="dock-resize-handle" @mousedown="startDockResize"></div>
+      <header class="dock-head">
+        <span>📊 {{ lastChart.title || '图表' }}</span>
+        <button class="icon-btn" @click="showChartDock = false">✕</button>
+      </header>
+      <div class="dock-body">
+        <div v-if="lastChart.indicators" class="dock-indicators">
+          <span v-for="(v, k) in lastChart.indicators" :key="k" class="dock-ind">
+            <b>{{ k }}</b> {{ v }}
+          </span>
+        </div>
+        <div ref="chartContainer" class="dock-chart-container"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======== 算法选择 ======== -->
+  <transition name="modal">
+    <div class="modal-mask" v-if="picker.show" @click.self="picker.show = false">
+      <div class="modal">
+        <header class="modal-head">
+          <div class="modal-mark">🧮</div>
+          <div>
+            <h2>选择分析算法</h2>
+            <p>对 <b>{{ picker.code }}</b> 进行数据分析，请选择算法：</p>
+          </div>
+          <button class="icon-btn" @click="picker.show = false">✕</button>
+        </header>
+        <div class="algo-grid">
+          <label v-for="a in algorithms" :key="a.key" class="algo-card"
+                 :class="{ on: picker.algorithm === a.key }" @click="picker.algorithm = a.key">
+            <input type="radio" :value="a.key" v-model="picker.algorithm" class="sr-only" />
+            <span class="radio" :class="{ on: picker.algorithm === a.key }"></span>
+            <div class="algo-meta">
+              <b>{{ a.label }}</b>
+              <span class="group">{{ a.group }}</span>
+              <p>{{ a.desc }}</p>
+            </div>
+          </label>
+        </div>
+        <footer class="modal-foot">
+          <button class="btn ghost" @click="picker.show = false">取消</button>
+          <button class="btn primary" :disabled="running" @click="runAnalysis">
+            {{ running ? '分析中…' : '开始分析' }}
+          </button>
+        </footer>
+      </div>
+    </div>
+  </transition>
+
+  <!-- v9: 异常处理弹窗 -->
+  <transition name="modal">
+    <div class="modal-mask" v-if="anomalyModal.show" @click.self="">
+      <div class="modal anomaly-modal">
+        <header class="modal-head">
+          <div class="modal-mark">⚠️</div>
+          <div>
+            <h2>数据异常检测</h2>
+            <p>{{ anomalyModal.question }}</p>
+          </div>
+        </header>
+        <div class="anomaly-list">
+          <div v-for="a in anomalyModal.anomalies" :key="a.id" class="anomaly-card">
+            <div class="anomaly-info">
+              <span class="anomaly-type" :class="a.severity">{{ a.type }}</span>
+              <span class="anomaly-desc">{{ a.description }}</span>
+            </div>
+            <div class="anomaly-actions">
+              <button class="btn mini" @click="resolveAnomaly(a.id, 'forward_fill')">前向填充</button>
+              <button class="btn mini" @click="resolveAnomaly(a.id, 'skip')">跳过</button>
+              <button class="btn mini" @click="resolveAnomaly(a.id, 'interpolate')">插值</button>
+              <button class="btn mini ghost" @click="resolveAnomaly(a.id, 'use_raw')">使用原始</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </transition>
+
+  <div class="footer-note" v-if="messages.length === 0">
+    <p>本助手仅供参考，不构成投资建议。数据来源于公开市场接口。</p>
+  </div>
+</div>
+
+<script src="https://unpkg.com/vue@3.4.38/dist/vue.global.prod.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+fastapi
+uvicorn[standard]
+akshare
+requests
+httpx
+beautifulsoup4
+statsmodels
+apscheduler
+scikit-learn
+pypinyin
+# v9: 多智能体架构
+langgraph>=1.2
+langchain-core>=1.5
+# v9: 预测模型
+xgboost>=2.0
+lightgbm>=4.0
+arch>=7.0
+# v9: 深度学习（LSTM）
+torch>=2.0
