@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+*.db
+*.db-shm
+*.db-wal
+*.pkl
+*.log
+.DS_Store
+sessions.db
+v6_sessions.db
+memory.db
+
+# Frontend (Vite)
+node_modules/
+dist/
+*.local
