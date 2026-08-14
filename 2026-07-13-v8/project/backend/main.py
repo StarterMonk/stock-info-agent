@@ -97,7 +97,7 @@ def _startup_snapshot_check():
 
 threading.Thread(target=_startup_snapshot_check, daemon=True).start()
 
-STATIC_DIR = os.path.join(_BACKEND_DIR, "..", "frontend")
+STATIC_DIR = os.path.join(_BACKEND_DIR, "..", "frontend", "dist")
 
 
 class ChatRequest(BaseModel):

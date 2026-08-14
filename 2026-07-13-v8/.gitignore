@@ -13,3 +13,8 @@ venv/
 sessions.db
 v6_sessions.db
 memory.db
+
+# Frontend (Vite)
+node_modules/
+dist/
+*.local

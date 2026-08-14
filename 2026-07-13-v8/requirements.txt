@@ -4,7 +4,9 @@ akshare
 requests
 httpx
 beautifulsoup4
-# v7-openrouter：LLM 直连 OpenRouter REST（OpenAI 兼容格式），无需 langchain/langgraph
+# v9 多智能体 LangGraph 架构
+langgraph
+# v7-openrouter：LLM 直连 OpenRouter REST（OpenAI 兼容格式）
 # LLM：OpenRouter；API Key 通过环境变量 OPENROUTER_API_KEY 提供
 # v7 新增：价格预测 + 定时增量同步 + 机器学习
 statsmodels

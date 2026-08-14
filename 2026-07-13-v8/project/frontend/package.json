@@ -1,0 +1,20 @@
+{
+  "name": "stock-agent-v9-frontend",
+  "version": "9.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Stock Agent v9 — 多智能体 A股分析助手 前端展示页（作品集/面试版）",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "echarts": "^5.5.1",
+    "vue": "^3.4.38"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.1.3",
+    "vite": "^5.4.2"
+  }
+}
